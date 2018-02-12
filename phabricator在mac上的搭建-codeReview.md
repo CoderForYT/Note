@@ -14,9 +14,6 @@
 ### 从Github上clone项目
     1. 在本机新建一个存放项目组件的目录，并进入，
     2. 使用以下命令下载项目
-    
-       $ git clone https://github.com/facebook/libphutil.git
-       $ git clone https://github.com/facebook/arcanist.git
        $ git clone https://github.com/facebook/phabricator.git
     
     PS: 这次使用的目录是： /Users/markmylove-mac/phabricator
@@ -106,8 +103,23 @@
     PS: php-fpm 常用命令:
         * $ sudo php-fpm    # 打开php-fpm
 
+### 安装Arcanist 
+    链接： https://www.5288z.com/1469.html
+    1. 在本机新建一个存放项目组件的目录，并进入，
+    2. 使用以下命令下载项目
+        $ git clone https://github.com/facebook/libphutil.git
+        $ git clone https://github.com/facebook/arcanist.git
+    3. 配置环境变量
+        $ cd ~
+        $ vim .bash_profile
+        $ export PATH="$PATH:/Users/Shixiong/Workspace/arcanist/bin"
+        $ source ~/.bash_profile
 ### 进入phabricator
     在浏览器直接输入nginx配置好的域名，直接打开。前面配置没有出错的话，可以进入配置管理员帐号的界面。
 
 ### 配置使用
     参考官网进行具体的配置
+
+
+## 使用
+    
