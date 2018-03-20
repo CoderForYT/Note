@@ -125,7 +125,7 @@ Grand Central Dispatch (GCD) comprises language features, runtime libraries, and
 ​	这里的队列指的执行任务的等待队列，即用来存放任务的队列。队列是一种特殊的线性表，采用先进先出（FIFO）的原则。即新任务总是被插入到队列的末尾，而读取任务的时候总是从队列的头部开始读取。GCD有两种类型的队列：串行队列和并发队列。**两者最主要的区别是：执行顺序不同，以及开启的线程数不同。**
 
  * 串行队列
-    * 每次只有一个任务被执行。只有任务处理结束，才会从队列中移除。一次只会用到一个线程。
+    * 每次只有一个任务被执行。只有任务处理结束，才会从队列中移除。只会用到一个线程。
  * 并发队列
    * 不需要等待任务处理结束，所以可以同时执行多个任务。但是并行执行的处理数量取决于当前系统的状态。所谓并行执行，就是使用多个线程同时执行多个任务。
 
@@ -133,14 +133,141 @@ Grand Central Dispatch (GCD) comprises language features, runtime libraries, and
 
 ​	综合以上任务和队列的组合，加上主线程是特殊的串行队列，可以总结出一下的表
 
-|     区别      |    并发队列（concurrent）    |                      串行队列（serial）                      |                            主队列                            |
-| :-----------: | :--------------------------: | :----------------------------------------------------------: | :----------------------------------------------------------: |
-| 同步（sync）  | 没有开启新线程，串行执行任务 | 当前线程调用：**死锁**     <br /> 其他线程调用：没有开启新线程，串行执行任务 | 主线程调用：**死锁**   <br />其他线程调用：没有开启新线程，串行执行任务 |
-| 异步（async） |  有开启新线程，并发执行队列  |               有开启新线程(1条)，串行执行任务                |                 没有开启新线程，串行执行任务                 |
+|       区别        |    并发队列（concurrent）    |                      串行队列（serial）                      |                            主队列                            |
+| :---------------: | :--------------------------: | :----------------------------------------------------------: | :----------------------------------------------------------: |
+| 同步任务（sync）  | 没有开启新线程，串行执行任务 | 当前线程调用：**死锁**     <br /> 其他线程调用：没有开启新线程，串行执行任务 | 主线程调用：**死锁**   <br />其他线程调用：没有开启新线程，串行执行任务 |
+| 异步任务（async） |  有开启新线程，并发执行队列  |               有开启新线程(1条)，串行执行任务                |                 没有开启新线程，串行执行任务                 |
 
 ​      PS：Q： 为什么在主队列或者在当前线程调用串行同步队列会引起死锁？ 
 
 ​		A：原因是同步任务的特点是：添加一个新的同步任务，会先阻塞当前线程，等待新添加的任务执行完成。 而串行队列的特点是：必须等到先添加的任务执行完成，才会执行新添加的任务。如果在主队列，或者当前线程调用串行同步队列，就会造成原有的任务等待新添加的任务完成，而新添加的任务等待原有任务的完成，造成相互等待，形成死锁。
+
+### 5.2 GCD队列的使用
+
+GCD 的使用步骤其实很简单，只有两步。
+
+	1.  创建或者获取一个队列(串行对类或者并行队列)
+	2.  将任务追加到任务的等待队列中，然后系统就会根据任务类型执行任务（同步执行或异步执行）
+
+#### 5.2.1 队列的创建/获取方法
+
+创建队列的API:
+
+```c
+// 队列创建
+dispatch_queue_t dispatch_queue_create(const char *label, dispatch_queue_attr_t attr);
+// 参数
+    const char *label：队列的唯一标识，推荐使用 com.apple.www这种格式，可以为空。
+    dispatch_queue_attr_t attr ：队列类型，两个宏。
+        * DISPATCH_QUEUE_SERIAL (or NULL） 串行队列
+        * DISPATCH_QUEUE_CONCURRENT 并发队列
+```
+
+```
+Discussion
+Blocks submitted to a serial queue are executed one at a time in FIFO order. Note, however, that blocks submitted to independent queues may be executed concurrently with respect to each other. Blocks submitted to a concurrent queue are dequeued in FIFO order but may run concurrently if resources are available to do so.
+
+If your app isn’t using ARC, you should call dispatch_release on a dispatch queue when your application no longer needs the dispatch queue, it should release it with the dispatch_release function. Any pending blocks submitted to a queue hold a reference to that queue, so the queue is not deallocated until all pending blocks have completed.
+
+只有提交到串行队列的block函数出队列时才会FIFO，而对于独立的队列可能会并行执行。提交到并行队列的block出队时也是FIFO，但是在执行的过程中可能会根据系统的资源来并行执行。
+
+如果你你是用MRC，当你的应用不在需要队列时，可以使用dispatch_release来释放，但如果队列中又任何pending状态的block，此时是无法dealloc的直到pending block完成。
+```
+
+代码：
+
+```c
+      // 串行队列
+      dispatch_queue_t queue_serial = dispatch_queue_create("com.app.serial", DISPATCH_QUEUE_SERIAL);
+      // 串行队列
+      dispatch_queue_t queue_null = dispatch_queue_create("com.app.null", NULL);
+      // 并发队列
+      dispatch_queue_t queue_concurrent = dispatch_queue_create("com.app.concurrent", DISPATCH_QUEUE_CONCURRENT);
+```
+
+获取主队列和全局并发队列的API
+
+```c
+// 获取主队列
+dispatch_queue_t dispatch_get_main_queue(void);
+// 获取全局并发队列
+dispatch_queue_t dispatch_get_global_queue(long identifier, unsigned long flags);
+// 参数：
+	long identifier: 队列的优先级,包含4个宏: 
+		iOS8和Mac OS 10.10之后可以使用： 
+            * QOS_CLASS_USER_INTERACTIVE
+            * QOS_CLASS_USER_INITIATED 
+            * QOS_CLASS_UTILITY
+            * QOS_CLASS_BACKGROUND
+		iOS8和Mac OS 10.10以前可以使用: 
+            * DISPATCH_QUEUE_PRIORITY_HIGH
+            * DISPATCH_QUEUE_PRIORITY_DEFAULT 
+            * DISPATCH_QUEUE_PRIORITY_LOW
+            * DISPATCH_QUEUE_PRIORITY_BACKGROUND
+	unsigned long flags：是苹果预留的参数，暂时永远设置为0
+```
+
+#### 5.2.2 任务的创建
+
+```c
+// 同步任务的创建
+void dispatch_sync(dispatch_queue_t queue, dispatch_block_t block);
+// 异步任务的创建
+void dispatch_async(dispatch_queue_t queue, dispatch_block_t block);
+// 参数： 
+	dispatch_queue_t queue: 队列
+	dispatch_block_t block: 任务代码
+```
+
+#### 5.2.3 线程间的通信
+
+​	在iOS中经常需要进行线程中的通信, 我们一般在主线程里处理UI刷新, 例如: 点击, 滚动, 拖拽等事件.  我们通常会把耗时操作放在异步线程, 比如图片下载, 网络请求, 解压缩等. 当我们完成操作以后, 需要吧结果展示到UI界面上,  就必须回到主线程, 那么就会用到线程间的通讯.  使用GCD, 可以通过block的嵌套完成通信
+
+```objective-c
+/**
+ * 线程间通信
+ */
+- (void)communication {
+    // 获取全局并发队列
+    dispatch_queue_t queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0); 
+    // 获取主队列
+    dispatch_queue_t mainQueue = dispatch_get_main_queue(); 
+    dispatch_async(queue, ^{
+        // 异步追加任务
+        for (int i = 0; i < 2; ++i) {
+            [NSThread sleepForTimeInterval:2];              // 模拟耗时操作
+            NSLog(@"1---%@",[NSThread currentThread]);      // 打印当前线程
+        }
+        // 回到主线程
+        dispatch_async(mainQueue, ^{
+            // 追加在主线程中执行的任务
+            [NSThread sleepForTimeInterval:2];              // 模拟耗时操作
+            NSLog(@"2---%@",[NSThread currentThread]);      // 打印当前线程
+        });
+    });
+}
+```
+
+输出结果
+
+```
+输出结果：
+2018-03-20  demo[10717:2441148] 1---<NSThread: 0x60000046f340>{number = 3, name = (null)}
+2018-03-20  demo[10717:2441148] 1---<NSThread: 0x60000046f340>{number = 3, name = (null)}
+2018-03-20  demo[10717:2440012] 2---<NSThread: 0x60000007da40>{number = 1, name = main}
+```
+
+### 5.3 GCD的队列组: (dispatch_group)
+
+​	有时候我们会有这样的需求：分别异步执行2个耗时任务，然后当2个耗时任务都执行完毕后再回到主线程执行任务。这时候我们可以用到 GCD 的队列组。
+
+
+
+
+
+
+
+
 
 
 
