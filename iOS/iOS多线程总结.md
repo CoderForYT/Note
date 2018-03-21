@@ -1,3 +1,5 @@
+
+
 # iOS多线程总结
 
 ## 目的
@@ -135,12 +137,69 @@ Grand Central Dispatch (GCD) comprises language features, runtime libraries, and
 
 |       区别        |    并发队列（concurrent）    |                      串行队列（serial）                      |                            主队列                            |
 | :---------------: | :--------------------------: | :----------------------------------------------------------: | :----------------------------------------------------------: |
-| 同步任务（sync）  | 没有开启新线程，串行执行任务 | 当前线程调用：**死锁**     <br /> 其他线程调用：没有开启新线程，串行执行任务 | 主线程调用：**死锁**   <br />其他线程调用：没有开启新线程，串行执行任务 |
+| 同步任务（sync）  | 没有开启新线程，串行执行任务 | 当前队列调用同步串行队列：**死锁**     <br /> 其他线程调用：没有开启新线程，串行执行任务 | 主线程调用：**死锁**   <br />其他线程调用：没有开启新线程，串行执行任务 |
 | 异步任务（async） |  有开启新线程，并发执行队列  |               有开启新线程(1条)，串行执行任务                |                 没有开启新线程，串行执行任务                 |
 
-​      PS：Q： 为什么在主队列或者在当前线程调用串行同步队列会引起死锁？ 
+PS:   一个面试题:
 
-​		A：原因是同步任务的特点是：添加一个新的同步任务，会先阻塞当前线程，等待新添加的任务执行完成。 而串行队列的特点是：必须等到先添加的任务执行完成，才会执行新添加的任务。如果在主队列，或者当前线程调用串行同步队列，就会造成原有的任务等待新添加的任务完成，而新添加的任务等待原有任务的完成，造成相互等待，形成死锁。
+​	Q : 为什么一下代码会发生死锁?   或者在主线程调用主队列会发生死锁?  
+
+```objective-c
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    dispatch_sync(dispatch_get_main_queue(), ^{ //发生死锁?
+        NSLog(@"执行任务1");
+    });
+}
+```
+
+​	A:   原因是同步任务的特点是：添加一个新的同步任务，会先阻塞当前线程，等待新添加的任务执行完成。 而串行队列的特点是：必须等到先添加的任务执行完成，才会执行新添加的任务。而在主线程执行的代码是默认加入到主线程当中,  所以在"主线程调用主队列", 就会造成原有的任务等待新添加的任务完成，而新添加的任务等待原有任务的完成，造成相互等待，形成死锁。
+
+​	    同样情况, 如果在串行队列当中, 使用同步串行任务, 而且使用的是当前队列, 就会发生死锁.  这也就是苹果在iOS6以后废弃了: dispatch_get_current_queue(void); 这个API, 就是为了避免这种现象发生.
+
+```objective-c
+API_DEPRECATED("unsupported interface", macos(10.6,10.9), ios(4.0,6.0))
+DISPATCH_EXPORT DISPATCH_PURE DISPATCH_WARN_RESULT DISPATCH_NOTHROW
+    
+dispatch_queue_t dispatch_get_current_queue(void);
+```
+
+代码演示: 
+
+```objective-c
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    
+    dispatch_get_current_queue()
+    // 状况1
+    dispatch_sync(dispatch_get_main_queue(), ^{ // 发生死锁
+        NSLog(@"执行任务1");
+    });
+    // 状况2
+    dispatch_queue_t queue = dispatch_queue_create("www.my.serial", DISPATCH_QUEUE_SERIAL);
+    dispatch_async(queue, ^{
+        NSLog(@"执行任务2");
+        dispatch_sync(queue, ^{ // 发生死锁
+            NSLog(@"执行任务3");
+        });
+    });
+    // 状况3
+    dispatch_sync(queue, ^{ // 不死锁
+        NSLog(@"执行任务4");
+    });
+    // 状况4
+    dispatch_async(queue, ^{
+        NSLog(@"执行任务5");
+        dispatch_sync(dispatch_get_main_queue(), ^{ // 不死锁
+            NSLog(@"执行任务6");
+        });
+    });
+}
+```
+
+​     
+
+​	A：原因是同步任务的特点是：添加一个新的同步任务，会先阻塞当前线程，等待新添加的任务执行完成。 而串行队列的特点是：必须等到先添加的任务执行完成，才会执行新添加的任务。如果在主队列，或者当前线程调用串行同步队列，就会造成原有的任务等待新添加的任务完成，而新添加的任务等待原有任务的完成，造成相互等待，形成死锁。
 
 ### 5.2 GCD队列的使用
 
@@ -257,17 +316,241 @@ void dispatch_async(dispatch_queue_t queue, dispatch_block_t block);
 2018-03-20  demo[10717:2440012] 2---<NSThread: 0x60000007da40>{number = 1, name = main}
 ```
 
-### 5.3 GCD的队列组: (dispatch_group)
+### 5.3 GCD队列组: (dispatch_group)
 
 ​	有时候我们会有这样的需求：分别异步执行2个耗时任务，然后当2个耗时任务都执行完毕后再回到主线程执行任务。这时候我们可以用到 GCD 的队列组。
 
+#### 5.3.1 创建
+
+```
+dispatch_group_t group = dispatch_group_create();
+```
+
+#### 5.3.2 添加任务
+
+```objective-c
+// 一个添加任务(不需要等待异步)
+dispatch_group_async(dispatch_group_t group, dispatch_queue_t queue, dispatch_block_t block);
+// 一个添加任务(需要等待异步, 比如需要等待请求返回)
+dispatch_group_enter(dispatch_group_t group); // 加入组
+dispatch_group_leave(dispatch_group_t group); // 离开组
+// 这两个函数同上边一样的效果，不过一定要注意这两个函数必须成对出现！否则这一组任务就永远执行不完。
+```
+
+#### 5.3.3 监听任务完成
+
+```objective-c
+// 任务完成的回掉
+void dispatch_group_notify(dispatch_group_t group, dispatch_queue_t queue, dispatch_block_t block);
+// 阻塞线程等待任务完成
+long dispatch_group_wait(dispatch_group_t group, dispatch_time_t timeout);
+// 参数
+	dispatch_time_t timeout: 超时时间, 如果在时间内任务组完成或者超时时间到了, 就会停止阻塞线程
+    /*
+    ps: dispatch_time_t 是GCD的时间类型, 系统提供一下几种设置: (详情见)
+    	DISPATCH_TIME_NOW,  (立刻)
+		DISPATCH_TIME_FOREVER  (永远)
+		dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)); // 5秒
+    */
+```
+
+#### 5.3.4 演示
+
+* **dispatch_async 和 dispatch_group_notify 的使用**
+
+```c
+dispatch_group_t group = dispatch_group_create();
+dispatch_group_async(group, dispatch_get_global_queue(0, 0), ^{
+        NSLog(@"任务1开始");
+        sleep(1);
+        NSLog(@"任务1结束");
+});
+dispatch_group_async(group, dispatch_get_global_queue(0, 0), ^{
+        NSLog(@"任务2开始");
+        sleep(2);
+        NSLog(@"任务2结束");
+});
+dispatch_group_notify(group, dispatch_get_global_queue(0, 0), ^{
+         NSLog(@"任务完成");
+});
+```
+
+输出: 
+
+```
+2018-03-21 15:28:34.256148+0800 demo[11013:1711277] 任务1开始
+2018-03-21 15:28:35.256650+0800 demo[11013:1711277] 任务1结束
+2018-03-21 15:28:35.256935+0800 demo[11013:1711277] 任务2开始
+2018-03-21 15:28:37.258002+0800 demo[11013:1711277] 任务2结束
+2018-03-21 15:28:37.258297+0800 demo[11013:1711922] 任务完成
+```
+
+----
+
+* **dispatch_group_enter , dispatch_group_leave 和 dispatch_group_notify 的使用**
+
+```objective-c
+- (void)dispatch_group_enter {
+    dispatch_group_t group = dispatch_group_create();
+    dispatch_group_enter(group);
+    dispatch_async(dispatch_get_global_queue(0, 0), ^{
+        NSLog(@"任务1开始");
+        sleep(1);
+        NSLog(@"任务1结束");
+        dispatch_group_leave(group);
+    });
+    
+    dispatch_group_enter(group);
+    dispatch_async(dispatch_get_global_queue(0, 0), ^{
+        NSLog(@"任务2开始");
+        sleep(2);
+        NSLog(@"任务2结束");
+        dispatch_group_leave(group);
+    });
+    
+    dispatch_group_notify(group, dispatch_get_global_queue(0, 0), ^{
+        NSLog(@"任务完成");
+    });
+}
+```
+
+输出: 
+
+```shell
+2018-03-21 15:33:17.853137+0800 demo[11076:1748929] 任务1开始
+2018-03-21 15:33:17.853137+0800 demo[11076:1748949] 任务2开始
+2018-03-21 15:33:18.857763+0800 demo[11076:1748929] 任务1结束
+2018-03-21 15:33:19.856344+0800 demo[11076:1748949] 任务2结束
+2018-03-21 15:33:19.856629+0800 demo[11076:1748949] 任务完成
+```
+
+---
+
+**dispatch_async 和 dispatch_group_notify ,  dispatch_group_wait的使用**
+
+```objective-c
+- (void)group_wait{
+    dispatch_group_t group = dispatch_group_create();
+    dispatch_group_async(group, dispatch_get_global_queue(0, 0), ^{
+        NSLog(@"任务1开始");
+        sleep(1);
+        NSLog(@"任务1结束");
+    });
+    dispatch_group_async(group, dispatch_get_global_queue(0, 0), ^{
+        NSLog(@"任务2开始");
+        sleep(2);
+        NSLog(@"任务2结束");
+    });
+    dispatch_group_notify(group, dispatch_get_global_queue(0, 0), ^{
+        NSLog(@"任务完成");
+    });
+    dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+    NSLog(@"----------> end");
+}
+```
+
+输出: 
+
+```shell
+2018-03-21 15:40:39.833922+0800 demo[11204:1786576] 任务2开始
+2018-03-21 15:40:39.833922+0800 demo[11204:1786575] 任务1开始
+2018-03-21 15:40:40.836963+0800 demo[11204:1786575] 任务1结束
+2018-03-21 15:40:41.834170+0800 demo[11204:1786576] 任务2结束
+2018-03-21 15:40:41.834419+0800 demo[11204:1786498] ----------> end
+2018-03-21 15:40:41.834433+0800 demo[11204:1786576] 任务完成
+```
+
+### 5.4 GCD时间(dispatch_time_t) 
+
+​	CGD使用自己的时间类型, 单位是纳秒. 计算时间是从现在开始计算的. 一下是dispatch_time_t 的API和宏
+
+```c
+// 代表现在
+DISPATCH_TIME_NOW
+// 代表永远
+DISPATCH_TIME_FOREVER
+// 创建自定义时间
+dispatch_time_t dispatch_time(dispatch_time_t when, int64_t delta);
+// 参数: 
+	dispatch_time_t when: 开始时间, 一般传入DISPATCH_TIME_NOW, 代表从现在开始
+	int64_t delta: 距离现在多少纳秒, 时间单位是纳秒. 系统提供了几个宏, 用于代表秒, 毫秒
+		* NSEC_PER_SEC  // 每秒多少纳秒
+		* NSEC_PER_MSEC  // 每秒多少毫秒
+		* USEC_PER_SEC  // 每秒多少微秒
+		* NSEC_PER_USEC // 每微秒多少纳秒
+
+5秒的示例: 
+	dispatch_time_t five_sec = dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC);
+```
+
+### 5.5 执行一次(dispatch_once)
+
+​	当我们只需要代码执行一次的时候, 比如我们创建单例的时候, 就可以使用dispatch_once, block里面的代码在整个App周期只会执行一次.
+
+​	**系统自带代码块**
+
+​	**代码**
+
+```
+static dispatch_once_t onceToken;
+dispatch_once(&onceToken, ^{
+	// 只执行一次的代码
+});
+```
+
+### 5.6 延迟执行(dispatch_after)
+
+​	GCD提供了延时操作的函数,  并**提供代码块**: 
+
+```c
+void dispatch_after(dispatch_time_t when, dispatch_queue_t queue, dispatch_block_t block);
+// 参数: 
+	dispatch_time_t when: 开始时间
+	dispatch_queue_t queue: 执行队列
+	dispatch_block_t block: 执行block	
+```
+
+​	使用
+
+```c
+dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        // 代码延迟5秒, 并在主线程执行
+});
+```
+
+### 5.7 信号量(dispatch_semaphore)
+
+​	在开发中, 有的时候我们想要控制某些代码的并发量, 可以使用dispatch_semaphore来达到目的, 同时发送两个请求, 只运行一个线程访问.  如果信号量为1的话, 就可以实现线程锁, 保证线程安全. 提供的API非常简单只有3个: 
+
+​	创建信号的时候会传入最大的信号量,  意味着有多少个信号量可以用,  
+
+​	dispatch_semaphore_wait函数表示等待信号量, 如果当前的信号量大于**0**的话,  就会继续执行代码, 并把信号量**-1**, 小于0或者等于0的时候等待时间超时,  
+
+​	dispatch_semaphore_signal函数表示发送一个信号量, 当代码执行结束的时候, 需要发送一个信号, 让信号量增加. 否则信号量将不会增加.
+
+```C
+// 创建一个信号量
+dispatch_semaphore_t dispatch_semaphore_create(long value);
+
+// 等待一个信号量
+long dispatch_semaphore_wait(dispatch_semaphore_t dsema, dispatch_time_t timeout);
+//参数: 
+	dispatch_semaphore_t dsema: 信号量
+	dispatch_time_t timeout: 超时时间
+
+// 发送一个信号量
+long dispatch_semaphore_signal(dispatch_semaphore_t dsema);
+```
 
 
 
+### 5.8
 
+### 5.9
 
+### 5.10
 
-
+### 5.5
 
 
 
